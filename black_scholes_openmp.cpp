@@ -38,7 +38,6 @@ Global initial seed: 4208275479      argv[1]= 100     argv[2]= 1000000
 #include <algorithm>
 #include <iomanip>   // For setting precision
 #include <omp.h>
-#include <tuple>
 
 using ui64 = u_int64_t;
 
@@ -77,8 +76,8 @@ inline void gaussian_box_muller_2(std::vector<double> &Z, ui64 num_simulations) 
     static std::mt19937 generator(std::random_device{}());
     static std::normal_distribution<double> distribution(0.0, 1.0);
 
-    #pragma omp parallel for private(generator, distribution)
-    for(ui64 i = 0; i < num_simulations; i++)
+#pragma omp for private(generator, distribution)
+    for(int i = 0; i < num_simulations; i++)
     {
         Z[i] = distribution(generator);
     }
@@ -97,33 +96,6 @@ inline double expTaylor(double x, int n = 16) {
 }
 
 //
-inline std::tuple<double, double> customBoxMuller(){ 
-    double u1 = 0 ;
-    double u2 = 0 ;
-    double r = 0 ;
-    do{
-        u1 = 2 * (std::rand() + 1.0E-5) / (RAND_MAX) - 1;
-        u2 = 2 * (std::rand() + 1.0E-5) / (RAND_MAX) - 1;
-        r = u1 * u1 + u2 * u2;
-    }while (r >= 1) ;
-
-    double log_r = sqrt(-2 *log(r) / r);
-
-    return {u1 * log_r , u2 * log_r};
-}
-
-inline void gaussian_box_muller_3(std::vector<double> &Z, ui64 num_simulations) 
-{
-    #pragma omp parallel for
-    for(int i = 0; i < num_simulations; i = i + 2)
-    {   
-        auto tmp = customBoxMuller();
-        Z[i]        = std::get<0>(tmp);
-        Z[i + 1]    = std::get<1>(tmp); 
-    }
-}
-
-//
 double black_scholes_monte_carlo_t2(const ui64 S0, const ui64 K, const double T,
         const double r, const double sigma, const double q, const ui64 num_simulations)
 {
@@ -138,31 +110,32 @@ double black_scholes_monte_carlo_t2(const ui64 S0, const ui64 K, const double T,
     gaussian_box_muller_2(Z_v, num_simulations);
 
     double ST = 0.0, ST2 = 0.0, Z = 0.0;
-
-    #pragma omp parallel for simd private(ST, ST2, Z)
-    for(ui64 i = 0; i < num_simulations; ++i)
+    #pragma omp parallel 
     {
-        // Load val
-        Z = Z_v[i]; //gaussian_box_muller(); // Z_v[i];
-        // Compute non constant term
-        ST = Z * diffusion + drift;
-        // Exp of non const term
-        ST2 = std::exp(ST);
-        // Store back for reduction afterwards
-        Z_v[i] = S0 * ST2 -K;
-    }
+        #pragma omp for simd nowait private(ST, ST2, Z)
+        for(ui64 i = 0; i < num_simulations; ++i)
+        {
+            // Load val
+            Z = Z_v[i]; //gaussian_box_muller(); // Z_v[i];
+            // Compute non constant term
+            ST = Z * diffusion + drift;
+            // Exp of non const term
+            ST2 = std::exp(ST);
+            // Store back for reduction afterwards
+            Z_v[i] = S0 * ST2 -K;
+        }
 
-    #pragma omp parallel for reduction(+:sum_payoffs)
-    for(ui64 i = 0; i < num_simulations; ++i)
-    {
-        sum_payoffs += std::max(Z_v[i], 0.0); //Z_v[i] * (Z_v[i] > 0.0);
+        #pragma omp for nowait reduction(+:sum_payoffs)
+        for(ui64 i = 0; i < num_simulations; ++i)
+        {
+            sum_payoffs += std::max(Z_v[i], 0.0); //Z_v[i] * (Z_v[i] > 0.0);
+        }
     }
-
     return res * (sum_payoffs * (1.0/num_simulations));
 }
 
 //
-double black_scholes_monte_carlo_t1_loop(const ui64 S0, const ui64 K, const double T,
+double black_scholes_monte_carlo_t3(const ui64 S0, const ui64 K, const double T,
         const double r, const double sigma, const double q, const ui64 num_simulations)
 {
     double sum_payoffs = 0.0;
@@ -176,97 +149,27 @@ double black_scholes_monte_carlo_t1_loop(const ui64 S0, const ui64 K, const doub
     gaussian_box_muller_2(Z_v, num_simulations);
 
     double ST = 0.0, ST2 = 0.0, Z = 0.0;
-
-    #pragma omp parallel for simd private(ST, ST2, Z) reduction(+:sum_payoffs) \
-     
-    for(ui64 i = 0; i < num_simulations; ++i)
+    #pragma omp parallel
     {
-        // Load val
-        Z = Z_v[i]; //gaussian_box_muller(); // Z_v[i];
-        // Compute non constant term
-        ST = Z * diffusion + drift;
-        // Exp of non const term
-        ST2 = S0 * expTaylor(ST) - K;
-        // Store back for reduction afterwards
-        //Z_v[i] = ST2;
-        sum_payoffs += std::max(ST2 - K, 0.0);
+        #pragma omp for simd nowait private(ST, ST2, Z)
+        for(ui64 i = 0; i < num_simulations; ++i)
+        {
+            // Load val
+            Z = Z_v[i]; //gaussian_box_muller(); // Z_v[i];
+            // Compute non constant term
+            ST = Z * diffusion + drift;
+            // Exp of non const term
+            ST2 = S0 * expTaylor(ST) - K;
+            // Store back for reduction afterwards
+            Z_v[i] = ST2;
+        }
+         
+        #pragma omp for nowait reduction(+:sum_payoffs)
+        for(ui64 i = 0; i < num_simulations; ++i)
+        {
+            sum_payoffs += std::max(Z_v[i], 0.0); //Z_v[i] * (Z_v[i] > 0.0);
+        }
     }
-    
-    return res * (sum_payoffs * (1.0/num_simulations));
-}
-//
-double black_scholes_monte_carlo_t2_loops(const ui64 S0, const ui64 K, const double T,
-        const double r, const double sigma, const double q, const ui64 num_simulations)
-{
-    double sum_payoffs = 0.0;
-    const double sigma_sq = (sigma * sigma)/2.0;
-
-    const double drift      = (r - q - sigma_sq) * T;
-    const double diffusion  = (sigma * std::sqrt(T));
-    const double res        = expTaylor(-r * T);
-
-    std::vector<double> Z_v(num_simulations);
-    gaussian_box_muller_2(Z_v, num_simulations);
-
-    double ST = 0.0, ST2 = 0.0, Z = 0.0;
-
-    #pragma omp parallel for simd private(ST, ST2, Z)  
-    for(ui64 i = 0; i < num_simulations; ++i)
-    {
-        // Load val
-        Z = Z_v[i]; //gaussian_box_muller(); // Z_v[i];
-        // Compute non constant term
-        ST = Z * diffusion + drift;
-        // Exp of non const term
-        ST2 = S0 * expTaylor(ST) - K;
-        // Store back for reduction afterwards
-        Z_v[i] = ST2;
-    }
-     
-    #pragma omp parallel for reduction(+:sum_payoffs) 
-    for(ui64 i = 0; i < num_simulations; ++i)
-    {
-        sum_payoffs += std::max(Z_v[i], 0.0); //Z_v[i] * (Z_v[i] > 0.0);
-    }
-
-    return res * (sum_payoffs * (1.0/num_simulations));
-}
-
-//
-double black_scholes_monte_carlo_t3_loops(const ui64 S0, const ui64 K, const double T,
-        const double r, const double sigma, const double q, const ui64 num_simulations)
-{
-    double sum_payoffs = 0.0;
-    const double sigma_sq = (sigma * sigma)/2.0;
-
-    const double drift      = (r - q - sigma_sq) * T;
-    const double diffusion  = (sigma * std::sqrt(T));
-    const double res        = expTaylor(-r * T);
-
-    std::vector<double> Z_v(num_simulations);
-    gaussian_box_muller_2(Z_v, num_simulations);
-
-    double ST = 0.0, ST2 = 0.0, Z = 0.0;
-
-    #pragma omp parallel for simd private(ST, ST2, Z)  
-    for(ui64 i = 0; i < num_simulations; ++i)
-    {
-        // Load val
-        Z_v[i] = Z_v[i] * diffusion + drift; 
-    }
-
-    #pragma omp parallel for simd  
-    for(ui64 i = 0; i < num_simulations; ++i)
-    {
-        Z_v[i] = S0 * expTaylor(Z_v[i]) - K;
-    }
-     
-    #pragma omp parallel for reduction(+:sum_payoffs)
-    for(ui64 i = 0; i < num_simulations; ++i)
-    {
-        sum_payoffs += std::max(Z_v[i], 0.0); //Z_v[i] * (Z_v[i] > 0.0);
-    }
-
     return res * (sum_payoffs * (1.0/num_simulations));
 }
 
@@ -287,19 +190,21 @@ double black_scholes_monte_carlo_bigbrain(const ui64 S0, const ui64 K, const dou
     gaussian_box_muller_2(Z_v, num_simulations);
     double ST = 0.0;
 
-    #pragma omp parallel for simd private(ST)  
-    for(ui64 i = 0; i < num_simulations; i++)
+    #pragma omp parallel private(ST)
     {
-        ST = Z_v[i] * sq_and_sigma;
-        Z_v[i] = expTaylor(ST);
-    }
+        #pragma omp for simd nowait 
+        for(ui64 i = 0; i < num_simulations; i++)
+        {
+            ST = Z_v[i] * sq_and_sigma;
+            Z_v[i] = expTaylor(ST);
+        }
 
-    #pragma omp parallel for reduction(+:sum_payoffs)
-    for (size_t i = 0; i < num_simulations; i++)
-    {
-        sum_payoffs += std::max(Z_v[i] - k, 0.0);
+        #pragma omp for nowait reduction(+:sum_payoffs)
+        for (size_t i = 0; i < num_simulations; i++)
+        {
+            sum_payoffs += std::max(Z_v[i] - k, 0.0);
+        }
     }
-
     return res * sum_payoffs;
 }
 
@@ -320,12 +225,12 @@ int main(int argc, char* argv[]) {
     constexpr double r     = 0.06;  // Risk-free interest rate
     constexpr double sigma = 0.2;   // Volatility
     constexpr double q     = 0.03;  // Dividend yield
-    double sum=0.0;
+
     // Generate a random seed at the start of the program using random_device
     std::random_device rd;
     unsigned long long global_seed = rd();  // This will be the global seed
 
-    /*std::cout << "Global initial seed: " << global_seed << "      argv[1]= " << argv[1] << "     argv[2]= " << argv[2] <<  std::endl;
+    std::cout << "Global initial seed: " << global_seed << "      argv[1]= " << argv[1] << "     argv[2]= " << argv[2] <<  std::endl;
 
     double sum=0.0;
     double t1=dml_micros();
@@ -333,7 +238,7 @@ int main(int argc, char* argv[]) {
         sum+= black_scholes_monte_carlo(S0, K, T, r, sigma, q, num_simulations);
     }
     double t2=dml_micros();
-    std::cout << std::fixed << std::setprecision(6) << " value= " << sum/num_runs << " in " << (t2-t1)/1000000.0 << " seconds" << std::endl;*/
+    std::cout << std::fixed << std::setprecision(6) << " value= " << sum/num_runs << " in " << (t2-t1)/1000000.0 << " seconds" << std::endl;
 
 /**********************************************************************************************************************************************/
 
@@ -346,45 +251,21 @@ int main(int argc, char* argv[]) {
     }
     double t4=dml_micros();
     std::cout << std::fixed << std::setprecision(6) << " value= " << sum/num_runs << " in " << (t4-t3)/1000000.0 << " seconds" << std::endl;
+
 /**********************************************************************************************************************************************/
-    std::cout << "=== 1 loop version with exp Taylor === \n";
+
     std::cout << "Global initial seed: " << global_seed << "      argv[1]= " << argv[1] << "     argv[2]= " << argv[2] <<  std::endl;
 
     sum=0.0;
-    double t1_loop=dml_micros();
+    double t5=dml_micros();
     for (ui64 run = 0; run < num_runs; ++run) {
-        sum+= black_scholes_monte_carlo_t1_loop(S0, K, T, r, sigma, q, num_simulations);
+        sum+= black_scholes_monte_carlo_t3(S0, K, T, r, sigma, q, num_simulations);
     }
-    double t1_loop_end=dml_micros();
-    std::cout << std::fixed << std::setprecision(6) << " value= " << sum/num_runs << " in " << (t1_loop_end-t1_loop)/1000000.0 << " seconds" << std::endl;
-
+    double t6=dml_micros();
+    std::cout << std::fixed << std::setprecision(6) << " value= " << sum/num_runs << " in " << (t6-t5)/1000000.0 << " seconds" << std::endl;
 
 /**********************************************************************************************************************************************/
-    std::cout << "=== 2 loops version with exp Taylor === \n";
-    std::cout << "Global initial seed: " << global_seed << "      argv[1]= " << argv[1] << "     argv[2]= " << argv[2] <<  std::endl;
-
-    sum=0.0;
-    double t2_loops=dml_micros();
-    for (ui64 run = 0; run < num_runs; ++run) {
-        sum+= black_scholes_monte_carlo_t2_loops(S0, K, T, r, sigma, q, num_simulations);
-    }
-    double t2_loops_end=dml_micros();
-    std::cout << std::fixed << std::setprecision(6) << " value= " << sum/num_runs << " in " << (t2_loops_end-t2_loops)/1000000.0 << " seconds" << std::endl;
-/**********************************************************************************************************************************************/
-    std::cout << "=== 3 loops version with exp Taylor === \n";
-    std::cout << "Global initial seed: " << global_seed << "      argv[1]= " << argv[1] << "     argv[2]= " << argv[2] <<  std::endl;
-
-    sum=0.0;
-    double t3_loops=dml_micros();
-    for (ui64 run = 0; run < num_runs; ++run) {
-        sum+= black_scholes_monte_carlo_t3_loops(S0, K, T, r, sigma, q, num_simulations);
-    }
-    double t3_loops_end=dml_micros();
-    std::cout << std::fixed << std::setprecision(6) << " value= " << sum/num_runs << " in " << (t3_loops_end-t3_loops)/1000000.0 << " seconds" << std::endl;
-
-
-/**********************************************************************************************************************************************/
-    std::cout << "=== Big brain v1.0 du GOAT : === \n";
+    std::cout << "Big brain v1.0 du GOAT : \n";
     std::cout << "Global initial seed: " << global_seed << "      argv[1]= " << argv[1] << "     argv[2]= " << argv[2] <<  std::endl;
 
     sum=0.0;

@@ -1,6 +1,15 @@
 # Black Scholes
 This repository contains the 2024 Teratec Hackathon work of team ARM-adillo on black scholes equation optimization
 
+# Compilation and Running
+
+Compiling and running a program has never been that easy :
+
+```bash
+make (CC = compiler if needed)
+./BSMC.exe <n_simulations> <n_runs>
+```
+
 # Optimizations steps
 -> Constants extraction
 

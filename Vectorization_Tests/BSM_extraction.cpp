@@ -31,39 +31,39 @@ inline void gaussian_box_muller_4(std::vector<double> &Z_v, ui64 num_simulations
 }
 
 //
+inline double fastexp(double x, int n =4) {
+	double sum = 1.0;
+	double term = 1.0;
+	for (int i = 1; i < n; i++) 
+	{
+	
+		term *= x / i;
+		sum += term;
+	}
+ 	return sum;
+}
+
+//
 double black_scholes_monte_carlo_t2(std::vector<double> &Z_v, std::vector<double> &results, const ui64 S0, const ui64 K, const double drift,
         const double diffusion, const double res, const ui64 num_simulations)
 {
     double sum_payoffs = 0.0;
     double Z = 0.0;  double ST = 0.0;
-    double Z1 = 0.0; double ST1 = 0.0;
 
-    ui64 n = num_simulations - num_simulations % 2;
-    for(ui64 i = 0; i < n; i+=2)
-    {
-	// Load val
-	Z 	= Z_v[i] 	* diffusion + drift; 
-	Z1 	= Z_v[i+1] 	* diffusion + drift;
-	
-	// Exp of non const term
-	ST 	= exp(Z);
-	ST1 	= exp(Z1);
-
-	// Store back for reduction afterwards
-	results[i]   = S0 * ST;
-	results[i+1] = S0 * ST1;
-    }
-
-    for(ui64 i = n; i < num_simulations; ++i)
-    {
-	    Z = Z_v[i] * diffusion + drift;
-	    ST = exp(Z);
-	    results[i] = S0 * ST;
-    }
-    
     for(ui64 i = 0; i < num_simulations; ++i)
     {
-	sum_payoffs += std::max(results[i] - K, 0.0);
+        // Load val
+        Z 	= Z_v[i] * diffusion + drift; 
+        
+        // Exp of non const term
+        ST 	= fastexp(Z);
+
+        results[i] = S0 * ST;
+    }
+
+    for(ui64 i = 0; i < num_simulations; i++)
+    {
+        sum_payoffs += std::max(results[i] - K, 0.0);
     }
 
     return res * (sum_payoffs * (1.0/num_simulations));

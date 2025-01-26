@@ -7,6 +7,7 @@
 #include <iomanip>   // For setting precision
 #include <omp.h>
 #include <tuple>
+#include <span>
 #include <armpl.h>
 
 using ui64 = u_int64_t;
@@ -22,37 +23,37 @@ dml_micros()
         return((tv.tv_sec*1000000.0)+tv.tv_usec);
 }
 
-inline void gaussian_box_muller_4(std::vector<double> &Z_v, ui64 num_simulations, ui64 global_seed)
+inline void gaussian_box_muller_4(std::vector<double> &Z_v, ui64 num_simulations, ui64 seed)
 {
 	VSLStreamStatePtr stream;
-	vslNewStream(&stream, VSL_BRNG_MT19937, global_seed);
+	vslNewStream(&stream, VSL_BRNG_MT19937, seed);
 	vdRngGaussian(VSL_RNG_METHOD_GAUSSIAN_BOXMULLER, stream, num_simulations, Z_v.data(), 0, 1);
 	vslDeleteStream(&stream);
 }
 
 //
-double black_scholes_monte_carlo_t2(std::vector<double> &Z_v, std::vector<double> &results, const ui64 S0, const ui64 K, const double drift,
+double black_scholes_monte_carlo(std::span<double> &Z_v, std::vector<double> &results, const ui64 S0, const ui64 K, const double drift,
         const double diffusion, const double res, const ui64 num_simulations)
 {
     double sum_payoffs = 0.0;
     double Z = 0.0;  double ST = 0.0;
     double Z1 = 0.0; double ST1 = 0.0;
 
-    for(ui64 i = 0; i < n; ++i)
+    for(ui64 i = 0; i < num_simulations; ++i)
     {
-	// Load val
-	Z 	= Z_v[i] * diffusion + drift; 
-	
-	// Exp of non const term
-	ST 	= exp(Z);
+        // Load val
+        Z 	= Z_v[i] * diffusion + drift; 
+        
+        // Exp of non const term
+        ST 	= exp(Z);
 
-	// Store back for reduction afterwards
-	results[i]   = S0 * ST;
+        // Store back for reduction afterwards
+        results[i]   = S0 * ST;
     }
     
     for(ui64 i = 0; i < num_simulations; ++i)
     {
-	sum_payoffs += std::max(results[i] - K, 0.0);
+	    sum_payoffs += std::max(results[i] - K, 0.0);
     }
 
     return res * (sum_payoffs * (1.0/num_simulations));
@@ -81,23 +82,32 @@ int main(int argc, char* argv[]) {
     std::random_device rd;
     unsigned long long global_seed = rd();  // This will be the global seed
 
-/**********************************************************************************************************************************************/
-    std::cout << "=== Simple version ===\n";
     constexpr double sigma_sq_d = (sigma * sigma) / 2.0;
     constexpr double drift      = (r - q - sigma_sq_d) * T;
-    const double diffusion  = (sigma * std::sqrt(T));
-    const double res_       = std::exp(-r * T); 
+    const double diffusion      = (sigma * sqrt(T));
+    const double res_           = exp(-r * T); 
 
     std::cout << "Global initial seed: " << global_seed << "      argv[1]= " << argv[1] << "     argv[2]= " << argv[2] <<  std::endl;
-    std::vector<double> Z_v1(num_simulations);
+    
+    size_t num_elements = num_simulations + num_runs; //cache_size / sizeof(double); 
+    
+    std::vector<double> Z_v1(num_elements);
     std::vector<double> results(num_simulations, 0.0);
-    gaussian_box_muller_4(Z_v1, num_simulations, global_seed);
+    gaussian_box_muller_4(Z_v1, num_elements, global_seed);
+    std::span<double> Z_span{Z_v1}; 
 
     sum=0.0;
-    double t1=dml_micros();
+    ui64 i = 0;
+    double t3=dml_micros();
     for (ui64 run = 0; run < num_runs; ++run) {
-        sum+= black_scholes_monte_carlo_t2(Z_v1, results, S0, K, drift, diffusion, res_, num_simulations);
+        std::span<double> b = Z_span.subspan(i, num_simulations);
+        sum += black_scholes_monte_carlo(b,results, S0, K, drift, diffusion, res_, num_simulations);
+	i+=1;
     }
-    double t2=dml_micros();
-    std::cout << std::fixed << std::setprecision(6) << " value= " << sum/num_runs << " in " << (t2-t1)/1000000.0 << " seconds" << std::endl;
+
+    double t4=dml_micros();
+    std::cout << std::fixed << std::setprecision(6) << " value= " << sum/num_runs << " in " << (t4-t3)/1000000.0 << " seconds" << std::endl;
+
+    return 0;
 }
+

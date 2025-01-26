@@ -21,12 +21,27 @@ dml_micros()
         gettimeofday(&tv,&tz);
         return((tv.tv_sec*1000000.0)+tv.tv_usec);
 }
+
 inline void gaussian_box_muller_4(std::vector<double> &Z_v, ui64 num_simulations, ui64 global_seed)
 {
 	VSLStreamStatePtr stream;
 	vslNewStream(&stream, VSL_BRNG_MT19937, global_seed);
 	vdRngGaussian(VSL_RNG_METHOD_GAUSSIAN_BOXMULLER, stream, num_simulations, Z_v.data(), 0, 1);
 	vslDeleteStream(&stream);
+}
+
+
+//
+inline double fastexp(double x, int n =4) {
+	double sum = 1.0;
+	double term = 1.0;
+	for (int i = 1; i < n; i++) 
+	{
+	
+		term *= x / i;
+		sum += term;
+	}
+ 	return sum;
 }
 
 //
@@ -38,47 +53,51 @@ double black_scholes_monte_carlo_t2(std::vector<double> &Z_v, std::vector<double
     double Z1 = 0.0; double ST1 = 0.0;
     double Z2 = 0.0; double ST2 = 0.0;
     double Z3 = 0.0; double ST3 = 0.0;
+    double Z4 = 0.0; double ST4 = 0.0;
+    double Z5 = 0.0; double ST5 = 0.0;
+    double Z6 = 0.0; double ST6 = 0.0;
+    double Z7 = 0.0; double ST7 = 0.0;
 
-    ui64 n = num_simulations - num_simulations % 4;
-    #pragma omp parallel 
+    ui64 n = num_simulations - num_simulations % 8;
+    for(ui64 i = 0; i < n; i+=8)
     {
-	    #pragma omp for simd nowait private(ST, ST1, ST2, ST3, Z, Z1, Z2, Z3)
-	    for(ui64 i = 0; i < n; i+=4)
-	    {
-		// Load val
-		Z 	= Z_v[i] 	* diffusion + drift; 
-		Z1 	= Z_v[i+1] 	* diffusion + drift;
-		Z2 	= Z_v[i+2] 	* diffusion + drift;
-		Z3	= Z_v[i+3]	* diffusion + drift;
-		
-		// Exp of non const term
-		ST 	= exp(Z);
-		ST1 	= exp(Z1);
-		ST2 	= exp(Z2);
-		ST3 	= exp(Z3);
+        // Load val
+        Z 	= Z_v[i] 	* diffusion + drift; 
+        Z1 	= Z_v[i+1] 	* diffusion + drift;
+        Z2 	= Z_v[i+2] 	* diffusion + drift;
+        Z3	= Z_v[i+3]	* diffusion + drift;
+        Z4 	= Z_v[i+4] 	* diffusion + drift; 
+        Z5 	= Z_v[i+5] 	* diffusion + drift;
+        Z6 	= Z_v[i+6] 	* diffusion + drift;
+        Z7	= Z_v[i+7]	* diffusion + drift;
+        
+        // Exp of non const term
+        ST 	= S0 * fastexp(Z);
+        ST1 	= S0 * fastexp(Z1);
+        ST2 	= S0 * fastexp(Z2);
+        ST3 	= S0 * fastexp(Z3);
+        ST4 	= S0 * fastexp(Z4);
+        ST5 	= S0 * fastexp(Z5);
+        ST6 	= S0 * fastexp(Z6);
+        ST7 	= S0 * fastexp(Z7);
 
-		// Store back for reduction afterwards
-		results[i]   = S0 * ST;
-		results[i+1] = S0 * ST;
-		results[i+2] = S0 * ST;
-		results[i+3] = S0 * ST;
-	    }
-
-	    #pragma omp for simd nowait private(ST, Z)
-	    for(ui64 i = n; i < num_simulations; ++i)
-	    {
-		    Z = Z_v[i] * diffusion + drift;
-		    ST = exp(Z);
-		    results[i] = S0 * ST;
-	    }
+        sum_payoffs += std::max(ST - K, 0.0);
+        sum_payoffs += std::max(ST1 - K, 0.0);
+        sum_payoffs += std::max(ST2 - K, 0.0);
+        sum_payoffs += std::max(ST3 - K, 0.0);
+        sum_payoffs += std::max(ST4 - K, 0.0);
+        sum_payoffs += std::max(ST5 - K, 0.0);
+        sum_payoffs += std::max(ST6 - K, 0.0);
+        sum_payoffs += std::max(ST7 - K, 0.0);
+    
     }
 
-    #pragma omp parallel for reduction(+:sum_payoffs)
-    for(ui64 i = 0; i < num_simulations; ++i)
+    for(ui64 i = n; i < num_simulations; ++i)
     {
-	sum_payoffs += std::max(results[i] - K, 0.0);
+	    Z = Z_v[i] * diffusion + drift;
+	    ST = S0 * fastexp(Z);
+	    sum_payoffs += std::max(ST - K, 0.0);
     }
-
     return res * (sum_payoffs * (1.0/num_simulations));
 }
 
@@ -118,10 +137,10 @@ int main(int argc, char* argv[]) {
     gaussian_box_muller_4(Z_v1, num_simulations, global_seed);
 
     sum=0.0;
-    double t3=dml_micros();
+    double t1=dml_micros();
     for (ui64 run = 0; run < num_runs; ++run) {
         sum+= black_scholes_monte_carlo_t2(Z_v1, results, S0, K, drift, diffusion, res_, num_simulations);
     }
-    double t4=dml_micros();
-    std::cout << std::fixed << std::setprecision(6) << " value= " << sum/num_runs << " in " << (t4-t3)/1000000.0 << " seconds" << std::endl;
+    double t2=dml_micros();
+    std::cout << std::fixed << std::setprecision(6) << " value= " << sum/num_runs << " in " << (t2-t1)/1000000.0 << " seconds" << std::endl;
 }

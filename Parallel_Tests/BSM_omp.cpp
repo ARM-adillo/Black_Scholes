@@ -36,19 +36,28 @@ double black_scholes_monte_carlo_t2(std::vector<double> &Z_v, std::vector<double
 {
     double sum_payoffs = 0.0;
     double Z = 0.0;  double ST = 0.0;
-    double Z1 = 0.0; double ST1 = 0.0;
 
-    for(ui64 i = 0; i < n; ++i)
+    ui64 n = num_simulations - num_simulations % 4;
+    #pragma omp parallel 
     {
-	// Load val
-	Z 	= Z_v[i] * diffusion + drift; 
-	
-	// Exp of non const term
-	ST 	= exp(Z);
+	    #pragma omp for simd nowait private(ST, Z)
+	    for(ui64 i = 0; i < num_simulations; ++i)
+	    {
+            // Load val
+            Z 	= Z_v[i] 	* diffusion + drift; 
+            
+            // Exp of non const term
+            ST 	= exp(Z);
 
-	// Store back for reduction afterwards
-	ST = S0 * ST;
-	sum_payoffs += std::max(S0 - K, 0.0);
+            // Store back for reduction afterwards
+            results[i]   = S0 * ST;
+	    }
+    }
+
+    #pragma omp parallel for reduction(+:sum_payoffs)
+    for(ui64 i = 0; i < num_simulations; ++i)
+    {
+	sum_payoffs += std::max(results[i] - K, 0.0);
     }
 
     return res * (sum_payoffs * (1.0/num_simulations));
@@ -90,10 +99,10 @@ int main(int argc, char* argv[]) {
     gaussian_box_muller_4(Z_v1, num_simulations, global_seed);
 
     sum=0.0;
-    double t1=dml_micros();
+    double t3=dml_micros();
     for (ui64 run = 0; run < num_runs; ++run) {
         sum+= black_scholes_monte_carlo_t2(Z_v1, results, S0, K, drift, diffusion, res_, num_simulations);
     }
-    double t2=dml_micros();
-    std::cout << std::fixed << std::setprecision(6) << " value= " << sum/num_runs << " in " << (t2-t1)/1000000.0 << " seconds" << std::endl;
+    double t4=dml_micros();
+    std::cout << std::fixed << std::setprecision(6) << " value= " << sum/num_runs << " in " << (t4-t3)/1000000.0 << " seconds" << std::endl;
 }
